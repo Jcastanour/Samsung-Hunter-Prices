@@ -494,21 +494,46 @@ def generar_reporte(resultados: list[Resultado], nuevos: list[str], cambiados: l
     return "\n".join(L)
 
 
-def generar_alerta_telegram(resultados: list[Resultado], nuevos: list[str]) -> dict | None:
-    """Si hay anomalías score ≥10, genera estructura JSON para que Claude mande Telegram."""
+def generar_alerta_telegram(resultados: list[Resultado], nuevos: list[str], cambiados: list[str]) -> dict:
+    """Siempre genera mensaje de Telegram. Tono cambia según haya anomalías o no."""
     activos = [r for r in resultados if r.activo and r.score >= SCORE_ALERTA]
-    if not activos and not nuevos:
-        return None
-
     activos.sort(key=lambda x: x.score, reverse=True)
     activos = activos[:5]
 
+    interesantes_medios = [r for r in resultados if r.activo and 5 <= r.score < SCORE_ALERTA]
+    total_activas = sum(1 for r in resultados if r.activo)
+    hay_algo_que_reportar = bool(activos or nuevos or cambiados)
+
+    if not hay_algo_que_reportar:
+        # Día tranquilo - mensaje breve, productivo, sin spam
+        msg = [
+            f"😴 *Samsung CO — {datetime.now():%d/%m}*",
+            f"Nada nuevo hoy. {len(resultados)} T&C revisados, {total_activas} activos.",
+            f"_{len(interesantes_medios)} promos rutinarias en el radar_ (5-9 pts, no urgentes)",
+        ]
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "anomalias_count": 0,
+            "nuevos_count": 0,
+            "es_alerta": False,
+            "mensaje_telegram": "\n".join(msg),
+        }
+
+    # Hay algo que reportar
     msg = [f"🚨 *Samsung CO — {datetime.now():%d/%m %H:%M}*\n"]
 
     if nuevos:
-        msg.append(f"🆕 *{len(nuevos)} PDFs nuevos detectados*")
+        msg.append(f"🆕 *{len(nuevos)} PDF(s) nuevo(s)*")
         for n in nuevos[:3]:
             msg.append(f"  • {n[:80]}")
+        if len(nuevos) > 3:
+            msg.append(f"  • _y {len(nuevos)-3} más..._")
+        msg.append("")
+
+    if cambiados:
+        msg.append(f"♻️ *{len(cambiados)} PDF(s) modificado(s)*")
+        for c in cambiados[:3]:
+            msg.append(f"  • {c[:80]}")
         msg.append("")
 
     if activos:
@@ -532,6 +557,8 @@ def generar_alerta_telegram(resultados: list[Resultado], nuevos: list[str]) -> d
         "timestamp": datetime.now().isoformat(),
         "anomalias_count": len(activos),
         "nuevos_count": len(nuevos),
+        "cambiados_count": len(cambiados),
+        "es_alerta": True,
         "mensaje_telegram": "\n".join(msg),
     }
 
@@ -592,15 +619,12 @@ def main():
     archivo.write_text(reporte)
     print(f"\n✅ Reporte: {archivo}")
 
-    alerta = generar_alerta_telegram(resultados, nuevos)
-    if alerta:
-        ALERT_FILE.write_text(json.dumps(alerta, indent=2, ensure_ascii=False))
+    alerta = generar_alerta_telegram(resultados, nuevos, cambiados)
+    ALERT_FILE.write_text(json.dumps(alerta, indent=2, ensure_ascii=False))
+    if alerta["es_alerta"]:
         print(f"🚨 ALERTA generada: {ALERT_FILE}")
-    elif ALERT_FILE.exists():
-        ALERT_FILE.unlink()  # limpiar alerta vieja si hoy no hay nada
-        print("✅ Sin anomalías hoy.")
     else:
-        print("✅ Sin anomalías hoy.")
+        print(f"😴 Sin novedades — mensaje breve generado en {ALERT_FILE}")
 
 
 if __name__ == "__main__":

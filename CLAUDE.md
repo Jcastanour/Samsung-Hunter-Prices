@@ -1,16 +1,18 @@
 # Samsung CO Coupon Hunter — instrucciones para el routine
 
-Este repositorio contiene un cazador de cupones de Samsung Colombia que se ejecuta diariamente como una **Routine de Claude Code**.
+Este repo caza cupones grandes en T&C de Samsung Colombia y manda Telegram diario.
 
-## Tu trabajo cada vez que este routine corra
+## Tu trabajo cada vez que el routine corra
 
-Sigue estos pasos en orden, sin desviarte. Si algo falla, reporta el error pero continúa con los pasos posteriores que no dependan del paso fallido.
+Sigue estos pasos en orden. Si algo falla, reporta el error pero continúa con los pasos posteriores que no dependan del paso fallido.
 
-### 1. Setup del entorno
+### 1. Setup
 
 ```bash
 pip install -q -r requirements.txt
 ```
+
+(El environment ya hace esto en setup script, pero por si acaso.)
 
 ### 2. Ejecuta el cazador
 
@@ -18,44 +20,49 @@ pip install -q -r requirements.txt
 python3 samsung_hunter.py
 ```
 
-Esto:
-- Descarga el listado de T&C de samsung.com/co/info/tyc/
-- Detecta PDFs nuevos vs `state.json` (commiteado en el repo)
-- Analiza cada PDF buscando anomalías reales (montos fijos en pesos, descuentos altos, BOGOs, stacking abierto)
-- Para PDFs con score ≥8 que toquen S24/S25/S26/lavadoras/neveras, scrapea precios reales en samsung.com/co
-- Genera `reportes/reporte_<fecha>.md`
-- Si encuentra anomalías score ≥10 o PDFs nuevos, genera `alerta.json`
+Esto genera siempre:
+- `state.json` actualizado (qué PDFs ya se vieron)
+- `reportes/reporte_<fecha>.md` (legible)
+- `alerta.json` (SIEMPRE existe, tiene un campo `es_alerta` true/false según haya anomalías)
 
-### 3. Si existe `alerta.json`, manda el mensaje por Telegram
-
-Lee el archivo `alerta.json`. Tiene esta estructura:
-
-```json
-{
-  "timestamp": "...",
-  "anomalias_count": N,
-  "nuevos_count": M,
-  "mensaje_telegram": "🚨 ..."
-}
+Si falla con error 403 al scrapear precios, reintenta con `--no-prices`:
+```bash
+python3 samsung_hunter.py --no-prices
 ```
 
-Usa el conector MCP de Telegram para enviar el campo `mensaje_telegram` a mi chat. Usa formato Markdown.
+### 3. Manda Telegram (SIEMPRE)
 
-**Si NO existe `alerta.json`, no envíes nada.** No mandes "todo bien" ni "sin novedades" — solo silencio cuando no hay nada anómalo.
+El archivo `alerta.json` siempre existe. Su campo `mensaje_telegram` está pre-formateado:
+- Día tranquilo: mensaje breve "😴 Nada nuevo, X PDFs revisados"
+- Día con novedades/anomalías: alerta detallada con productos, scores, precios
 
-### 4. Commitea los cambios
+Manda el mensaje SIEMPRE, sin importar si es alerta o "todo tranquilo":
 
 ```bash
-git add state.json reportes/ alerta.json 2>/dev/null || true
-git commit -m "chore: corrida $(date +%Y-%m-%d)" || echo "Sin cambios"
-git push origin claude/samsung-hunter-$(date +%Y%m%d) || git push
+MENSAJE=$(jq -r .mensaje_telegram alerta.json)
+curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+  --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+  --data-urlencode "parse_mode=Markdown" \
+  --data-urlencode "text=$MENSAJE"
 ```
 
-(Las routines están autorizadas a empujar a ramas `claude/`. No empujes directo a `main`.)
+Verifica que la respuesta de Telegram tenga `"ok":true`. Si trae `"ok":false`, imprime el error y sigue.
 
-## Qué cuenta como "anomalía real"
+### 4. Commit y push
 
-El script asigna puntos así:
+```bash
+git add state.json reportes/ alerta.json
+git -c user.email="claude@anthropic.com" -c user.name="Claude Routine" \
+  commit -m "chore: corrida $(date +%Y-%m-%d)" || echo "Sin cambios para commitear"
+
+# Push a rama claude/ (si la branch policy lo restringe)
+RAMA="claude/samsung-hunter-$(date +%Y%m%d)"
+git push origin HEAD:$RAMA 2>/dev/null || git push origin HEAD
+```
+
+Si el push falla por permisos, no es fatal — el reporte ya está mandado por Telegram. Lo importante es que la próxima corrida tenga un `state.json` actualizado, así que intenta resolver el push si puedes.
+
+## Qué cuenta como "anomalía real" (score ≥10)
 
 | Señal | Puntos |
 |---|---|
@@ -70,11 +77,9 @@ El script asigna puntos así:
 | Producto de interés (S24/S25/S26/lavadora/nevera) | +2 cada match |
 | Promo vencida | -5 |
 
-**Score ≥10 = alertar por Telegram.** Bajo eso es ruido rutinario.
-
 ## Lo que el usuario está cazando
 
-El usuario encontró una vez un cupón que tumbó un Galaxy S24 de $2.4M a $1.1M (descuento de $1.3M). Quiere replicar esa caza. Específicamente le interesan:
+El usuario encontró una vez un cupón que tumbó un Galaxy S24 de $2.4M a $1.1M (descuento de $1.3M). Quiere replicar eso. Le interesan:
 
 - Galaxy S24, S25, S26 (todas las variantes)
 - Plegables Z Fold, Z Flip
@@ -84,14 +89,13 @@ El usuario encontró una vez un cupón que tumbó un Galaxy S24 de $2.4M a $1.1M
 
 NO le interesan los descuentos rutinarios del 5%, 10%, ni "envío gratis".
 
-## Si el script falla
+## Variables disponibles en el environment
 
-- 403 al scrapear samsung.com → reintenta una vez. Si vuelve a fallar, corre con `python3 samsung_hunter.py --no-prices` para skip del scraping.
-- Errores de PDF parsing → ignora, sigue con el siguiente.
-- Si el script no produce `alerta.json` y no hay PDFs nuevos, NO mandes Telegram.
+- `TELEGRAM_BOT_TOKEN` — token del bot de Telegram (@samsunghunterbot)
+- `TELEGRAM_CHAT_ID` — chat ID del usuario
 
 ## Estado del repo
 
-- `state.json` — qué PDFs ya viste y su tamaño/score (no borrarlo)
+- `state.json` — qué PDFs ya viste y su tamaño/score (NO borrar)
 - `reportes/` — historial de reportes diarios
-- `alerta.json` — solo existe el día que hay anomalía. Bórralo automáticamente si no hay nada hoy.
+- `alerta.json` — siempre se sobreescribe en cada corrida
